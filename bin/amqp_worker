@@ -1,0 +1,100 @@
+#!/usr/bin/env ruby
+
+require 'active_support/all'
+require 'amqp'
+require 'daemons'
+require 'fileutils'
+require 'json'
+require 'optparse'
+
+# This is whole file is more or less copied from delayed_job.
+
+worker_count = 1
+
+pid_dir = File.join(File.dirname(__FILE__), '..', 'tmp', 'pids')
+
+monitor = false
+
+opts = OptionParser.new do |opts|
+  opts.banner = "Usage: #{File.basename($0)} [options] start|stop|restart|run"
+
+  opts.on('-h', '--help', 'Show this message.') do
+    puts opts
+
+    exit 1
+  end
+
+  opts.on('-n', '--number_of_workers=workers', 'Number of unique workers to spawn.') do |n|
+    worker_count = n.to_i rescue 1
+  end
+
+  opts.on('--pid-dir=DIR', 'Specifies an alternate directory in which to store the process ids.') do |dir|
+    pid_dir = dir
+  end
+
+  opts.on('-m', '--monitor', 'Start monitor process.') do
+    monitor = true
+  end
+end
+
+args = opts.parse!(ARGV)
+
+FileUtils.mkdir_p(pid_dir) unless File.exists?(pid_dir)
+
+worker_count.times do |i|
+  worker_name = worker_count == 1 ? 'amqp_worker' : "amqp_worker_#{i}"
+
+  Daemons.run_proc(worker_name, dir: pid_dir, dir_mode: :normal, monitor: monitor, ARGV: args) do |*args|
+    EventMachine.run do
+      AMQP.connect(host: 'localhost', username: 'guest', password: 'guest') do |connection|
+        puts 'Connected. Waiting for messages... Hit Control + C to stop.'
+
+        channel  = AMQP::Channel.new(connection)
+
+        exchange = channel.direct('newsletter-exchange', durable: true, auto_delete: false)
+
+        channel.queue('signup-queue', durable: true, auto_delete: false).bind(exchange, routing_key: 'signup').subscribe do |metadata, payload|
+          puts "message #{metadata.delivery_tag} recieved"
+
+          puts "metadata.routing_key : #{metadata.routing_key}"
+          puts "metadata.content_type: #{metadata.content_type}"
+          puts "metadata.priority    : #{metadata.priority}"
+          puts "metadata.headers     : #{metadata.headers.inspect}"
+          puts "metadata.timestamp   : #{metadata.timestamp.inspect}"
+          puts "metadata.type        : #{metadata.type}"
+          puts "metadata.delivery_tag: #{metadata.delivery_tag}"
+          puts "metadata.redelivered : #{metadata.redelivered}"
+
+          puts "metadata.exchange    : #{metadata.exchange}"
+
+          params = ActiveSupport::HashWithIndifferentAccess.new(JSON.parse(payload))
+
+          if params[:command].present?
+            if params[:command] == 'quit'
+              connection.close do
+                EventMachine.stop
+              end
+            end
+          else
+            if params[:signup].present?
+              puts params.inspect
+
+              # sleep to simulate a very long task
+              sleep 10
+            end
+          end
+
+          puts "message #{metadata.delivery_tag} processed"
+        end
+
+        stop = Proc.new do
+          connection.close do
+            EventMachine.stop
+          end
+        end
+
+        Signal.trap('INT', &stop)
+      end
+    end
+  end
+end
