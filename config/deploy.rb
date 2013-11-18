@@ -4,6 +4,9 @@ set :default_stage, 'production'
 require 'capistrano/ext/multistage'
 require 'bundler/capistrano'
 
+set :rvm_ruby_string, :local
+set :rvm_autolibs_flag, :enable
+
 before 'deploy:setup', 'rvm:install_rvm'
 before 'deploy:setup', 'rvm:install_ruby'
 before 'deploy:setup', 'rvm:create_gemset'
@@ -35,5 +38,6 @@ set (:deploy_to) { "/home/#{user}/sites/#{application}" }
 load 'config/recipes/check'
 load 'config/recipes/symlinks'
 load 'config/recipes/unicorn'
+load 'config/recipes/amqp_worker'
 
 after 'deploy', 'deploy:cleanup'
